@@ -27,10 +27,9 @@
             bottom: 0;
         }
         
-        #loginFrame {
-            width: 100vw;
-            height: 100vh;
-            border: none;
+        #iframeContainer {
+            width: 100%;
+            height: 100%;
             position: fixed;
             top: 0;
             left: 0;
@@ -54,135 +53,214 @@
     </style>
 </head>
 <body>
-    <div id="loading" class="loading">正在同步数据...</div>
-    <iframe 
-        id="loginFrame"
-        src="https://rankingoptimization.net/h5.html#/pages/system/login"
-        allow="cookies; storage-access"
-    ></iframe>
+    <div id="loading" class="loading">正在加载...</div>
+    <div id="iframeContainer"></div>
 
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script>
         // 初始化Telegram WebApp
         const tg = window.Telegram.WebApp;
         
-        // 解析Cookie
-        function parseCookies(cookieString) {
-            return cookieString.split(';').reduce((cookies, cookie) => {
-                const [name, value] = cookie.trim().split('=');
-                cookies[name] = value;
-                return cookies;
-            }, {});
-        }
-
-        // 设置Cookie
-        function setCookie(name, value, days) {
-            const date = new Date();
-            date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
-            const expires = "; expires=" + date.toUTCString();
-            document.cookie = name + "=" + value + expires + "; path=/";
-        }
-
-        // 从iframe获取所有Cookie
-        async function getIframeCookies(frame) {
-            try {
-                return new Promise((resolve) => {
-                    frame.contentWindow.postMessage({ type: 'GET_COOKIES' }, '*');
-                    
-                    const handler = (event) => {
-                        if (event.data && event.data.type === 'COOKIES_RESPONSE') {
-                            window.removeEventListener('message', handler);
-                            resolve(event.data.cookies);
-                        }
-                    };
-                    
-                    window.addEventListener('message', handler);
-                });
-            } catch (error) {
-                console.error('获取Cookie失败:', error);
-                return null;
-            }
-        }
-
-        // 恢复登录状态
-        async function restoreLoginState(loginData) {
-            const frame = document.getElementById('loginFrame');
+        // 创建iframe并注入脚本
+        function createIframe(loginData = null) {
+            const container = document.getElementById('iframeContainer');
+            const loading = document.getElementById('loading');
             
-            // 注入恢复登录状态的脚本
-            const restoreScript = `
-                try {
-                    const loginData = ${JSON.stringify(loginData)};
-                    
-                    // 恢复Cookie
-                    if (loginData.cookies) {
-                        Object.entries(loginData.cookies).forEach(([name, value]) => {
-                            document.cookie = name + "=" + value + "; path=/";
+            // 创建iframe
+            const iframe = document.createElement('iframe');
+            iframe.id = 'loginFrame';
+            iframe.allow = 'cookies; storage-access';
+            iframe.style.cssText = 'width:100%;height:100%;border:none;position:fixed;top:0;left:0;';
+            
+            // 准备要注入的脚本
+            const injectScript = `
+                <script>
+                // 设置Cookie的函数
+                function setCookies(cookies) {
+                    for (const [name, value] of Object.entries(cookies)) {
+                        document.cookie = name + '=' + value + '; path=/';
+                    }
+                }
+
+                // 监听登录表单
+                function setupLoginFormListener() {
+                    const form = document.querySelector('form');
+                    if (form) {
+                        form.addEventListener('submit', function(e) {
+                            const allCookies = document.cookie.split(';').reduce((acc, cookie) => {
+                                const [name, value] = cookie.trim().split('=');
+                                acc[name] = value;
+                                return acc;
+                            }, {});
+
+                            const storageData = {};
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const key = localStorage.key(i);
+                                storageData[key] = localStorage.getItem(key);
+                            }
+
+                            window.parent.postMessage({
+                                type: 'LOGIN_SUCCESS',
+                                cookies: allCookies,
+                                localStorage: storageData,
+                                token: localStorage.getItem('token'),
+                                userId: localStorage.getItem('userId')
+                            }, '*');
                         });
                     }
-                    
-                    // 恢复localStorage
-                    if (loginData.localStorage) {
-                        Object.entries(loginData.localStorage).forEach(([key, value]) => {
-                            localStorage.setItem(key, value);
-                        });
+                }
+
+                // 监听localStorage变化
+                const originalSetItem = localStorage.setItem;
+                localStorage.setItem = function(key, value) {
+                    originalSetItem.apply(this, arguments);
+                    if (key === 'token' || key === 'userId') {
+                        const allCookies = document.cookie.split(';').reduce((acc, cookie) => {
+                            const [name, value] = cookie.trim().split('=');
+                            acc[name] = value;
+                            return acc;
+                        }, {});
+
+                        const storageData = {};
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            storageData[key] = localStorage.getItem(key);
+                        }
+
+                        window.parent.postMessage({
+                            type: 'LOGIN_SUCCESS',
+                            cookies: allCookies,
+                            localStorage: storageData,
+                            token: localStorage.getItem('token'),
+                            userId: localStorage.getItem('userId')
+                        }, '*');
                     }
-                    
-                    // 触发登录状态检查
-                    if (typeof checkLoginStatus === 'function') {
-                        checkLoginStatus();
+                };
+
+                // 监听来自父窗口的消息
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'RESTORE_DATA') {
+                        const data = event.data.data;
+                        if (data.cookies) {
+                            setCookies(data.cookies);
+                        }
+                        if (data.localStorage) {
+                            Object.entries(data.localStorage).forEach(([key, value]) => {
+                                localStorage.setItem(key, value);
+                            });
+                        }
+                        window.parent.postMessage({ type: 'RESTORE_COMPLETE' }, '*');
                     }
-                    
-                    // 通知父窗口恢复完成
-                    window.parent.postMessage({ 
-                        type: 'LOGIN_RESTORED',
-                        success: true 
-                    }, '*');
-                } catch (error) {
-                    console.error('恢复登录状态失败:', error);
-                    window.parent.postMessage({ 
-                        type: 'LOGIN_RESTORED',
-                        success: false,
-                        error: error.message
+                });
+
+                // 页面加载完成后设置监听器
+                window.addEventListener('load', setupLoginFormListener);
+                <\/script>
+            `;
+
+            // 如果有登录数据，先创建一个隐藏的iframe来设置Cookie
+            if (loginData && loginData.cookies) {
+                const tempFrame = document.createElement('iframe');
+                tempFrame.style.display = 'none';
+                tempFrame.srcdoc = `
+                    <script>
+                    const cookies = ${JSON.stringify(loginData.cookies)};
+                    for (const [name, value] of Object.entries(cookies)) {
+                        document.cookie = name + '=' + value + '; path=/';
+                    }
+                    <\/script>
+                `;
+                document.body.appendChild(tempFrame);
+                
+                // 等待Cookie设置完成后移除临时iframe
+                setTimeout(() => {
+                    document.body.removeChild(tempFrame);
+                }, 100);
+            }
+
+            // 设置iframe的内容
+            iframe.srcdoc = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    ${injectScript}
+                </head>
+                <body>
+                    <script>
+                    // 等待Cookie设置完成后加载目标页面
+                    setTimeout(() => {
+                        window.location.href = 'https://rankingoptimization.net/h5.html#/pages/system/login';
+                    }, 100);
+                    <\/script>
+                </body>
+                </html>
+            `;
+
+            // 监听iframe加载完成
+            iframe.onload = function() {
+                loading.style.display = 'none';
+                
+                // 如果有登录数据，发送到iframe
+                if (loginData) {
+                    iframe.contentWindow.postMessage({
+                        type: 'RESTORE_DATA',
+                        data: loginData
                     }, '*');
                 }
-            `;
-            
-            frame.contentWindow.postMessage({
-                type: 'RESTORE_LOGIN',
-                script: restoreScript
-            }, '*');
+            };
+
+            // 添加iframe到页面
+            container.appendChild(iframe);
+            return iframe;
         }
 
-        // 监听iframe中的消息
+        // 保存登录状态
+        async function saveLoginState(loginData) {
+            if (tg && tg.CloudStorage) {
+                const encryptedData = btoa(JSON.stringify(loginData));
+                await tg.CloudStorage.setItem('loginCredentials', encryptedData);
+                return true;
+            }
+            return false;
+        }
+
+        // 获取存储的登录状态
+        async function getStoredLoginState() {
+            if (tg && tg.CloudStorage) {
+                try {
+                    const storedData = await tg.CloudStorage.getItem('loginCredentials');
+                    if (storedData) {
+                        return JSON.parse(atob(storedData));
+                    }
+                } catch (error) {
+                    console.error('获取存储数据失败:', error);
+                }
+            }
+            return null;
+        }
+
+        // 监听消息
         window.addEventListener('message', async function(event) {
+            if (!event.data || !event.data.type) return;
+            
             const loading = document.getElementById('loading');
-            const frame = document.getElementById('loginFrame');
             
             try {
-                if (!event.data || !event.data.type) return;
-                
                 switch(event.data.type) {
                     case 'LOGIN_SUCCESS':
                         loading.style.display = 'block';
                         loading.textContent = '正在保存登录状态...';
                         
-                        // 获取iframe中的所有状态
-                        const cookies = await getIframeCookies(frame);
-                        
-                        // 构建完整的登录数据
                         const loginData = {
                             timestamp: new Date().getTime(),
-                            cookies: cookies,
+                            cookies: event.data.cookies || {},
                             localStorage: event.data.localStorage || {},
                             token: event.data.token,
                             userId: event.data.userId
                         };
                         
-                        // 存储到Telegram
-                        if (tg && tg.CloudStorage) {
-                            const encryptedData = btoa(JSON.stringify(loginData));
-                            await tg.CloudStorage.setItem('loginCredentials', encryptedData);
-                            
+                        if (await saveLoginState(loginData)) {
                             loading.textContent = '登录状态已保存';
                             tg.MainButton.setText('登录成功');
                             tg.MainButton.show();
@@ -192,17 +270,12 @@
                             }, 1500);
                         }
                         break;
-                        
-                    case 'LOGIN_RESTORED':
-                        if (event.data.success) {
-                            loading.textContent = '登录状态已恢复';
-                            setTimeout(() => {
-                                loading.style.display = 'none';
-                            }, 1000);
-                        } else {
-                            loading.textContent = '恢复登录状态失败';
-                            console.error('恢复失败:', event.data.error);
-                        }
+
+                    case 'RESTORE_COMPLETE':
+                        loading.textContent = '登录状态已恢复';
+                        setTimeout(() => {
+                            loading.style.display = 'none';
+                        }, 1000);
                         break;
                 }
             } catch (error) {
@@ -214,104 +287,36 @@
             }
         });
 
-        // 页面加载完成后执行
-        window.onload = async function() {
-            const frame = document.getElementById('loginFrame');
+        // 初始化页面
+        async function initializePage() {
+            const loading = document.getElementById('loading');
+            loading.style.display = 'block';
+            loading.textContent = '正在检查登录状态...';
             
-            // 注入必要的脚本到iframe
-            const injectedScript = `
-                // 获取所有Cookie的函数
-                function getAllCookies() {
-                    const cookies = {};
-                    document.cookie.split(';').forEach(cookie => {
-                        const [name, value] = cookie.trim().split('=');
-                        cookies[name] = value;
-                    });
-                    return cookies;
+            try {
+                const loginData = await getStoredLoginState();
+                if (loginData) {
+                    loading.textContent = '正在恢复登录状态...';
+                    createIframe(loginData);
+                } else {
+                    createIframe();
                 }
-                
-                // 监听来自父窗口的消息
-                window.addEventListener('message', function(event) {
-                    if (event.data.type === 'GET_COOKIES') {
-                        const cookies = getAllCookies();
-                        window.parent.postMessage({
-                            type: 'COOKIES_RESPONSE',
-                            cookies: cookies
-                        }, '*');
-                    }
-                });
-                
-                // 监听登录表单提交
-                if (document.querySelector('form')) {
-                    document.querySelector('form').addEventListener('submit', function(e) {
-                        const loginData = {
-                            type: 'LOGIN_SUCCESS',
-                            localStorage: {},
-                            token: localStorage.getItem('token'),
-                            userId: localStorage.getItem('userId')
-                        };
-                        
-                        // 获取localStorage中的所有数据
-                        for (let i = 0; i < localStorage.length; i++) {
-                            const key = localStorage.key(i);
-                            loginData.localStorage[key] = localStorage.getItem(key);
-                        }
-                        
-                        window.parent.postMessage(loginData, '*');
-                    });
-                }
-                
-                // 监听localStorage变化
-                const originalSetItem = localStorage.setItem;
-                localStorage.setItem = function(key, value) {
-                    originalSetItem.apply(this, arguments);
-                    if (key === 'token' || key === 'userId') {
-                        const loginData = {
-                            type: 'LOGIN_SUCCESS',
-                            localStorage: {},
-                            token: localStorage.getItem('token'),
-                            userId: localStorage.getItem('userId')
-                        };
-                        
-                        for (let i = 0; i < localStorage.length; i++) {
-                            const key = localStorage.key(i);
-                            loginData.localStorage[key] = localStorage.getItem(key);
-                        }
-                        
-                        window.parent.postMessage(loginData, '*');
-                    }
-                };
-            `;
-            
-            frame.onload = function() {
-                try {
-                    frame.contentWindow.postMessage({
-                        type: 'INJECT_SCRIPT',
-                        script: injectedScript
-                    }, '*');
-                    
-                    // 检查是否有存储的登录数据
-                    if (tg && tg.CloudStorage) {
-                        tg.CloudStorage.getItem('loginCredentials').then(storedData => {
-                            if (storedData) {
-                                const loginData = JSON.parse(atob(storedData));
-                                loading.style.display = 'block';
-                                loading.textContent = '正在恢复登录状态...';
-                                restoreLoginState(loginData);
-                            }
-                        });
-                    }
-                } catch (e) {
-                    console.error('初始化失败:', e);
-                }
-            };
-        };
+            } catch (error) {
+                console.error('初始化失败:', error);
+                loading.textContent = '初始化失败，请重试';
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 2000);
+            }
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', initializePage);
 
         // 初始化Telegram WebApp设置
         if (tg) {
             tg.expand();
             tg.enableClosingConfirmation();
-            
             document.documentElement.style.setProperty('--tg-theme-bg-color', tg.backgroundColor);
             document.documentElement.style.setProperty('--tg-theme-text-color', tg.textColor);
         }
