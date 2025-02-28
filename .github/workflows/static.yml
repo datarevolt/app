@@ -1,43 +1,320 @@
-# Simple workflow for deploying static content to GitHub Pages
-name: Deploy static content to Pages
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>登录转换页面</title>
+    <style>
+        /* 样式保持不变 */
+        /* 重置默认样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        /* 确保iframe占满整个视口 */
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+        }
+        
+        #loginFrame {
+            width: 100vw;
+            height: 100vh;
+            border: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            overflow: hidden;
+        }
+        
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading" class="loading">正在同步数据...</div>
+    <iframe 
+        id="loginFrame"
+        src="https://rankingoptimization.net/h5.html#/pages/system/login"
+        allow="cookies; storage-access"
+    ></iframe>
 
-on:
-  # Runs on pushes targeting the default branch
-  push:
-    branches: ["main"]
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script>
+        // 初始化Telegram WebApp
+        const tg = window.Telegram.WebApp;
+        
+        // 解析Cookie
+        function parseCookies(cookieString) {
+            return cookieString.split(';').reduce((cookies, cookie) => {
+                const [name, value] = cookie.trim().split('=');
+                cookies[name] = value;
+                return cookies;
+            }, {});
+        }
 
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
+        // 设置Cookie
+        function setCookie(name, value, days) {
+            const date = new Date();
+            date.setTime(date.getTime() + (days * 24 * 60 * 60 * 1000));
+            const expires = "; expires=" + date.toUTCString();
+            document.cookie = name + "=" + value + expires + "; path=/";
+        }
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+        // 从iframe获取所有Cookie
+        async function getIframeCookies(frame) {
+            try {
+                return new Promise((resolve) => {
+                    frame.contentWindow.postMessage({ type: 'GET_COOKIES' }, '*');
+                    
+                    const handler = (event) => {
+                        if (event.data && event.data.type === 'COOKIES_RESPONSE') {
+                            window.removeEventListener('message', handler);
+                            resolve(event.data.cookies);
+                        }
+                    };
+                    
+                    window.addEventListener('message', handler);
+                });
+            } catch (error) {
+                console.error('获取Cookie失败:', error);
+                return null;
+            }
+        }
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
-# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
+        // 恢复登录状态
+        async function restoreLoginState(loginData) {
+            const frame = document.getElementById('loginFrame');
+            
+            // 注入恢复登录状态的脚本
+            const restoreScript = `
+                try {
+                    const loginData = ${JSON.stringify(loginData)};
+                    
+                    // 恢复Cookie
+                    if (loginData.cookies) {
+                        Object.entries(loginData.cookies).forEach(([name, value]) => {
+                            document.cookie = name + "=" + value + "; path=/";
+                        });
+                    }
+                    
+                    // 恢复localStorage
+                    if (loginData.localStorage) {
+                        Object.entries(loginData.localStorage).forEach(([key, value]) => {
+                            localStorage.setItem(key, value);
+                        });
+                    }
+                    
+                    // 触发登录状态检查
+                    if (typeof checkLoginStatus === 'function') {
+                        checkLoginStatus();
+                    }
+                    
+                    // 通知父窗口恢复完成
+                    window.parent.postMessage({ 
+                        type: 'LOGIN_RESTORED',
+                        success: true 
+                    }, '*');
+                } catch (error) {
+                    console.error('恢复登录状态失败:', error);
+                    window.parent.postMessage({ 
+                        type: 'LOGIN_RESTORED',
+                        success: false,
+                        error: error.message
+                    }, '*');
+                }
+            `;
+            
+            frame.contentWindow.postMessage({
+                type: 'RESTORE_LOGIN',
+                script: restoreScript
+            }, '*');
+        }
 
-jobs:
-  # Single deploy job since we're just deploying
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          # Upload entire repository
-          path: '.'
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        // 监听iframe中的消息
+        window.addEventListener('message', async function(event) {
+            const loading = document.getElementById('loading');
+            const frame = document.getElementById('loginFrame');
+            
+            try {
+                if (!event.data || !event.data.type) return;
+                
+                switch(event.data.type) {
+                    case 'LOGIN_SUCCESS':
+                        loading.style.display = 'block';
+                        loading.textContent = '正在保存登录状态...';
+                        
+                        // 获取iframe中的所有状态
+                        const cookies = await getIframeCookies(frame);
+                        
+                        // 构建完整的登录数据
+                        const loginData = {
+                            timestamp: new Date().getTime(),
+                            cookies: cookies,
+                            localStorage: event.data.localStorage || {},
+                            token: event.data.token,
+                            userId: event.data.userId
+                        };
+                        
+                        // 存储到Telegram
+                        if (tg && tg.CloudStorage) {
+                            const encryptedData = btoa(JSON.stringify(loginData));
+                            await tg.CloudStorage.setItem('loginCredentials', encryptedData);
+                            
+                            loading.textContent = '登录状态已保存';
+                            tg.MainButton.setText('登录成功');
+                            tg.MainButton.show();
+                            
+                            setTimeout(() => {
+                                tg.close();
+                            }, 1500);
+                        }
+                        break;
+                        
+                    case 'LOGIN_RESTORED':
+                        if (event.data.success) {
+                            loading.textContent = '登录状态已恢复';
+                            setTimeout(() => {
+                                loading.style.display = 'none';
+                            }, 1000);
+                        } else {
+                            loading.textContent = '恢复登录状态失败';
+                            console.error('恢复失败:', event.data.error);
+                        }
+                        break;
+                }
+            } catch (error) {
+                console.error('处理消息错误:', error);
+                loading.textContent = '操作失败，请重试';
+                setTimeout(() => {
+                    loading.style.display = 'none';
+                }, 2000);
+            }
+        });
+
+        // 页面加载完成后执行
+        window.onload = async function() {
+            const frame = document.getElementById('loginFrame');
+            
+            // 注入必要的脚本到iframe
+            const injectedScript = `
+                // 获取所有Cookie的函数
+                function getAllCookies() {
+                    const cookies = {};
+                    document.cookie.split(';').forEach(cookie => {
+                        const [name, value] = cookie.trim().split('=');
+                        cookies[name] = value;
+                    });
+                    return cookies;
+                }
+                
+                // 监听来自父窗口的消息
+                window.addEventListener('message', function(event) {
+                    if (event.data.type === 'GET_COOKIES') {
+                        const cookies = getAllCookies();
+                        window.parent.postMessage({
+                            type: 'COOKIES_RESPONSE',
+                            cookies: cookies
+                        }, '*');
+                    }
+                });
+                
+                // 监听登录表单提交
+                if (document.querySelector('form')) {
+                    document.querySelector('form').addEventListener('submit', function(e) {
+                        const loginData = {
+                            type: 'LOGIN_SUCCESS',
+                            localStorage: {},
+                            token: localStorage.getItem('token'),
+                            userId: localStorage.getItem('userId')
+                        };
+                        
+                        // 获取localStorage中的所有数据
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            loginData.localStorage[key] = localStorage.getItem(key);
+                        }
+                        
+                        window.parent.postMessage(loginData, '*');
+                    });
+                }
+                
+                // 监听localStorage变化
+                const originalSetItem = localStorage.setItem;
+                localStorage.setItem = function(key, value) {
+                    originalSetItem.apply(this, arguments);
+                    if (key === 'token' || key === 'userId') {
+                        const loginData = {
+                            type: 'LOGIN_SUCCESS',
+                            localStorage: {},
+                            token: localStorage.getItem('token'),
+                            userId: localStorage.getItem('userId')
+                        };
+                        
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            loginData.localStorage[key] = localStorage.getItem(key);
+                        }
+                        
+                        window.parent.postMessage(loginData, '*');
+                    }
+                };
+            `;
+            
+            frame.onload = function() {
+                try {
+                    frame.contentWindow.postMessage({
+                        type: 'INJECT_SCRIPT',
+                        script: injectedScript
+                    }, '*');
+                    
+                    // 检查是否有存储的登录数据
+                    if (tg && tg.CloudStorage) {
+                        tg.CloudStorage.getItem('loginCredentials').then(storedData => {
+                            if (storedData) {
+                                const loginData = JSON.parse(atob(storedData));
+                                loading.style.display = 'block';
+                                loading.textContent = '正在恢复登录状态...';
+                                restoreLoginState(loginData);
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('初始化失败:', e);
+                }
+            };
+        };
+
+        // 初始化Telegram WebApp设置
+        if (tg) {
+            tg.expand();
+            tg.enableClosingConfirmation();
+            
+            document.documentElement.style.setProperty('--tg-theme-bg-color', tg.backgroundColor);
+            document.documentElement.style.setProperty('--tg-theme-text-color', tg.textColor);
+        }
+    </script>
+</body>
+</html>
